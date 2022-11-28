@@ -199,6 +199,22 @@ metadata {
         input name: "external_sensors", type: "bool", title: "Use External Sensor?", defaultValue: false
         input "external_contact_reversed", "enum", title:"Is the external contact sensor reversed?", defaultValue: false, options: [Yes:"Yes",No:"No"], required: true
     }
+    if (getDataValue("model") in ["SHSW-1"]) {
+        input name: "mqtt", type: "bool", title: "Use MQTT Broker?", defaultValue: false
+    }
+    if (getDataValue("mqtt") == true) {
+        input name: "MQTTBroker", type: "text", title: "MQTT Broker Address:", 
+            required: true, displayDuringSetup: true
+        input name: "username", type: "text", title: "MQTT Username:", 
+            description: "(blank if none)", required: false, displayDuringSetup: true
+        input name: "password", type: "password", title: "MQTT Password:", 
+            description: "(blank if none)", required: false, displayDuringSetup: true
+        input name: "topicSub", type: "text", title: "Topic to Subscribe:", 
+            description: "Example Topic (shellymotionsensor-60A423). Please don't use a #", 
+            required: true, displayDuringSetup: true
+        input name: "QOS", type: "text", title: "QOS Value:", required: false, 
+            defaultValue: "1", displayDuringSetup: true
+    }
         
         
         
@@ -295,6 +311,19 @@ def updated() {
     version()
     refresh()
     getSettings()
+}
+
+def parse(String description) {
+  msg = interfaces.mqtt.parseMessage(description)
+  topic = msg.get('topic')
+  payload = msg.get('payload')
+  if (logEnable) log.info "${payload}"
+  def parser = new JsonSlurper()
+  if (topic == "shellies/${settings?.topicSub}") {
+      def pr_vals = parser.parseText(payload)
+      if (pr_vals.relay.0 == "on") sendEvent(name: "switch", value: "on", displayed: true)
+      if (pr_vals.relay.0 == "off") sendEvent(name: "switch", value: "off", displayed: true)
+  }
 }
 
 private dbCleanUp() {
