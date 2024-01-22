@@ -1,5 +1,5 @@
 /*
- *  Shelly Plus H&T Device Handler
+ *  Shelly Smoke Device Handler
  *
  *  Copyright © 2020 Allterco Robotics US
  *
@@ -21,8 +21,6 @@
  *        These settings are found via the web settings for the device
  *
  *  Changes:
- *  1.0.1 - Added unit for dashboard temps/humidity
- *        - Fixed battery/voltage readings GH PR#22
  *  1.0.0 - Initial release
  *
  */
@@ -31,23 +29,28 @@ import groovy.json.JsonSlurper
 import java.util.GregorianCalendar
 
 def setVersion(){
-	state.Version = "1.0.1"
-	state.InternalName = "ShellyPlusH&T"
+	state.Version = "1.0.0"
+	state.InternalName = "ShellySmoke"
 }
 
 metadata {
-  definition (name: "Shelly Plus H&T", namespace: "sgrayban", 
+  definition (name: "Shelly Smoke", namespace: "sgrayban", 
       author: "Scott Grayban", 
-      importURL: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Plus-ht.groovy")
+      importURL: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Smoke.groovy")
     {
         capability "Sensor"
         capability "Initialize"
-        capability "TemperatureMeasurement"
-        capability "RelativeHumidityMeasurement"
+        capability "SmokeDetector"
         capability "Battery"
         capability "VoltageMeasurement"
         
         attribute "DriverStatus", "string"
+        attribute "mute", "string"
+        attribute "cloud_connected", "string"
+        attribute "StableFW_Update", "string"
+        attribute "BetaFW_Update", "string"
+
+        command "mute"
     }
 
   preferences {
@@ -58,7 +61,7 @@ metadata {
       input name: "password", type: "password", title: "MQTT Password:", 
           description: "(blank if none)", required: false, displayDuringSetup: true
       input name: "topicSub", type: "text", title: "Topic to Subscribe:", 
-          description: "Example Topic (shellymotionsensor-60A423). Please don't use a #", 
+          description: "Example Topic (shellyplussmoke-80646fd11718). Please don't use a #", 
           required: true, displayDuringSetup: true
       input name: "QOS", type: "text", title: "QOS Value:", required: false, 
         defaultValue: "1", displayDuringSetup: true
@@ -78,21 +81,23 @@ def parse(String description) {
   payload = msg.get('payload')
   if (logEnable) log.info "${payload}"
   def parser = new JsonSlurper()
-  if (topic == "${settings?.topicSub}/status/temperature:0") {
+  if (topic == "${settings?.topicSub}/status/smoke:0") {
       def pr_vals = parser.parseText(payload)
 
-      if (state.temp_scale == "C") sendEvent(name: "temperature", value: pr_vals['tC'], unit: " \u00B0" +state.temp_scale, displayed: true)
-      if (state.temp_scale == "F") sendEvent(name: "temperature", value: pr_vals['tF'], unit: " \u00B0" +state.temp_scale, displayed: true)
-  }
-  if (topic == "${settings?.topicSub}/status/humidity:0") {
-      def pr_vals = parser.parseText(payload)
-
-      sendEvent(name: "humidity", value: pr_vals['rh'], displayed: true)
+      smokestatus = pr_vals['alarm']
+      
+      if (smokestatus == false) {
+          sendEvent(name: "smoke", value: "clear", displayed: true)
+      } else {
+          sendEvent(name: "smoke", value: "detected", displayed: true)
+      }
+          
+      sendEvent(name: "mute", value: pr_vals['mute'], displayed: true)
   }
   if (topic == "${settings?.topicSub}/status/devicepower:0") {
       def pr_vals = parser.parseText(payload)
 
-      sendEvent(name: "battery", value: pr_vals['battery']['percent'], displayed: true)
+      sendEvent(name: "battery", value: pr_vals['battery']['percent'], unit:"%", displayed: true)
       sendEvent(name: "voltage", value: pr_vals['battery']['V'], displayed: true)
   }
   if (topic == "${settings?.topicSub}/status/wifi") {
@@ -108,15 +113,55 @@ def parse(String description) {
 
       state.mac = pr_vals['mac']
       updateDataValue("MAC", state.mac)
-}
+      
+      fw = pr_vals['available_updates']
+      if(fw.containsKey("stable")) {
+          sendEvent(name:  "StableFW_Update", value: "<font color='green'>Available</font>", isStateChange: true);
+        }else
+          if(!(fw.containsKey("stable"))) {
+              sendEvent(name:  "StableFW_Update", value: "Current", isStateChange: true);
+          }
+        
+        if(fw.containsKey("beta")) {
+            sendEvent(name:  "BetaFW_Update", value: "<font color='red'>Available</font>", isStateChange: true);
+        }else
+            if(!(fw.containsKey("beta"))) {
+                sendEvent(name:  "BetaFW_Update", value: "Current", isStateChange: true);
+            }
+  }
+  if (topic == "${settings?.topicSub}/status/cloud") {
+      def pr_vals = parser.parseText(payload)
+
+        if (pr_vals['connected'] == true) {
+            sendEvent(name: "cloud_connected", value: "<font color='green'>Connected</font>")
+        } else {
+            sendEvent(name: "cloud_connected", value: "<font color='red'>Not Connected</font>")
+        }
+  }
 
 }
+
+def mute(){
+    log.info "Mute detector"
+    def params = [uri: "http://${username}:${password}@${state.sta_ip}/rpc/Smoke.Mute?id=0"]
+try {
+    httpGet(params) {
+// not needed as the only response is null
+//        resp -> resp.headers.each {
+//        logEnable "Response: ${it.name} : ${it.value}"
+//        }
+    } // End try
+} catch (e) {
+    log.error "something went wrong: $e"
+}
+} // End Mute
 
 def updated() {
   if (logEnable) log.info "Updated..."
     initialize()
     unschedule()
-    updateDataValue("model", "SHPLUSHT-01")
+    dbCleanUp()
+    updateDataValue("model", "SNSN-0031Z")
     //updateDataValue("ShellyHostname", state.ShellyHostname)
     updateDataValue("ShellyIP", state.sta_ip)
     updateDataValue("ShellySSID", state.ssid)
@@ -187,15 +232,16 @@ def logsOff(){
     device.updateSetting("logEnable",[value:"false",type:"bool"])
 }
 
-void resetMotionEvent() {
-    sendEvent(name:"motion", value: "inactive", isStateChange: false, descriptionText: "Motion Inactive")
-}
-
 // Check Version   ***** with great thanks and acknowlegment to Cobra (github CobraVmax) for his original code **************
 def version(){
 	updatecheck()
 	schedule("0 0 18 1/1 * ? *", updatecheck) // Cron schedule
 //	schedule("0 0/1 * 1/1 * ? *", updatecheck) // Test Cron schedule
+}
+
+private dbCleanUp() {
+//	unschedule()
+    state.remove("ps")
 }
 
 def updatecheck(){
